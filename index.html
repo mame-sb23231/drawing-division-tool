@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>建築図面PDF 分割・自動リネームツール（超高速版）</title>
+  <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <style>
+    body { font-family: "Meiryo", sans-serif; max-width: 960px; margin: 20px auto; padding: 15px; background: #f4f6f9; color: #1e293b; }
+    .card { background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    h1 { font-size: 20px; color: #1e3a8a; margin-top: 0; border-bottom: 2px solid #1e3a8a; padding-bottom: 10px; }
+    .notice { background: #eef2ff; padding: 10px 14px; border-left: 4px solid #3b82f6; font-size: 13px; margin-bottom: 15px; }
+    .controls { margin: 15px 0; padding: 15px; border: 2px dashed #cbd5e1; border-radius: 6px; background: #f8fafc; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 15px; }
+    .slider-box { background: #fff; padding: 10px 15px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
+    button.primary { background: #2563eb; color: white; border: none; padding: 10px 20px; font-size: 15px; font-weight: bold; border-radius: 5px; cursor: pointer; }
+    button.primary:hover { background: #1d4ed8; }
+    button.primary:disabled { background: #94a3b8; cursor: not-allowed; }
+
+    /* 進捗バー */
+    .progress-wrap { display: none; margin: 12px 0; background: #f1f5f9; padding: 10px 14px; border-radius: 6px; border: 1px solid #cbd5e1; }
+    .progress-text { font-size: 13px; font-weight: bold; color: #1e3a8a; margin-bottom: 6px; }
+    .progress-bar-bg { width: 100%; height: 10px; background: #e2e8f0; border-radius: 5px; overflow: hidden; }
+    .progress-bar-fill { width: 0%; height: 100%; background: #2563eb; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
+    th, td { border: 1px solid #cbd5e1; padding: 8px 10px; text-align: left; vertical-align: middle; }
+    th { background: #f1f5f9; }
+    
+    /* 図面表示ボタン */
+    .view-btn { background: #0f766e; color: #fff; border: none; border-radius: 4px; padding: 7px 12px; font-size: 12px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+    .view-btn:hover { background: #115e59; }
+
+    /* 入力欄と候補ボタン */
+    .input-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .zumen-input { width: 320px; padding: 6px 8px; font-size: 14px; border: 1px solid #94a3b8; border-radius: 4px; background: #eff6ff; font-weight: bold; }
+    .zumen-input.needs-check { background: #fefce8; border-color: #eab308; }
+    .no-candidate-msg { color: #64748b; font-size: 11px; }
+    .preset-row { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 4px; }
+    .preset-btn { background: #e2e8f0; border: none; border-radius: 3px; padding: 3px 8px; font-size: 11px; cursor: pointer; color: #334155; }
+    .preset-btn:hover { background: #cbd5e1; }
+
+    /* 拡大プレビューモーダル */
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.82); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
+    .modal-content { background: #fff; padding: 15px; border-radius: 8px; max-width: 94vw; max-height: 92vh; display: flex; flex-direction: column; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
+    .modal-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #e2e8f0; gap: 10px; }
+    .modal-nav { display: flex; align-items: center; gap: 6px; }
+    .modal-canvas-wrap { overflow: auto; max-height: 78vh; border: 1px solid #cbd5e1; background: #e2e8f0; text-align: center; min-width: 600px; min-height: 400px; position: relative; }
+    .modal-loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(15,23,42,0.85); color: #fff; padding: 8px 16px; border-radius: 6px; font-size: 13px; display: none; }
+    .modal-btn { background: #475569; color: #fff; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .modal-btn:hover { background: #334155; }
+    .modal-btn:disabled { background: #cbd5e1; cursor: not-allowed; }
+    .modal-close { background: #dc2626; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>建築図面PDF 分割・自動リネームツール（超高速版）</h1>
+  <div class="notice">
+    <strong>🔒 完全ローカル処理：</strong>PDFは外部に送信されず、PCのブラウザ内だけで高速処理されます。各行の<strong>「🔍 図面を表示」</strong>を押すと図面全体が画面中央に表示されます。
+  </div>
+
+  <div class="controls">
+    <div>
+      <strong>1. PDFファイルを選択：</strong><br>
+      <input type="file" id="pdfInput" accept="application/pdf" style="margin-top:6px;">
+    </div>
+    <div class="slider-box">
+      <label for="heightRange"><strong>2. 下エリアの読み取り高さ：下端から <span id="heightVal">9</span>%</strong></label><br>
+      <input type="range" id="heightRange" min="4" max="25" value="9" style="width: 220px; margin-top:5px;">
+      <div style="font-size:11px; color:#64748b;">※スライダー変更時はキャッシュから一瞬で再計算します</div>
+    </div>
+  </div>
+
+  <!-- 進捗表示エリア -->
+  <div id="progressWrap" class="progress-wrap">
+    <div id="progressText" class="progress-text">処理中...</div>
+    <div class="progress-bar-bg">
+      <div id="progressBarFill" class="progress-bar-fill"></div>
+    </div>
+  </div>
+
+  <div id="resultArea" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <span style="font-size:13px;">名称を確認・修正して「ZIPで一括ダウンロード」を押してください。</span>
+      <button id="downloadBtn" class="primary">ZIPで一括ダウンロード</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 50px;">頁</th>
+          <th style="width: 120px;">図面確認</th>
+          <th>保存するファイル名（図面名称）＆ 候補ボタン</th>
+        </tr>
+      </thead>
+      <tbody id="pageList"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 拡大プレビュー用モーダル -->
+<div id="previewModal" class="modal-overlay">
+  <div class="modal-content">
+    <div class="modal-header">
+      <strong id="modalTitle" style="font-size:15px; color:#1e3a8a;">図面プレビュー</strong>
+      <div class="modal-nav">
+        <button type="button" id="prevPageBtn" class="modal-btn">◀ 前の図面</button>
+        <button type="button" id="nextPageBtn" class="modal-btn">次の図面 ▶</button>
+        <button type="button" id="zoomToggleBtn" class="modal-btn" style="background:#0f766e;">右下（表題欄）を拡大</button>
+        <button type="button" id="closeModalBtn" class="modal-close">× 閉じる</button>
+      </div>
+    </div>
+    <div id="modalCanvasWrap" class="modal-canvas-wrap">
+      <div id="modalLoading" class="modal-loading">図面を描画中...</div>
+      <canvas id="modalCanvas"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  let loadedPdfBytes = null;
+  let parsedPdfDoc = null;
+  let cachedPageTexts = [];
+  let currentModalPageNum = 1;
+  let isZoomedIn = false;
+  let currentRenderTask = null; // 連続めくり時の描画キャンセル用
+
+  const PRESET_TITLES = [
+    '表紙・図面リスト', '付近見取図・配置図', '仮設計画図', '特記仕様書',
+    '平面図', '立面図', '断面図', '建具特記・建具表', '詳細図'
+  ];
+
+  const KEYWORD_REGEX = /(特記仕様書|仕様書|表紙|図面目録|図面リスト|付近見取図|案内図|位置図|配置図|仮設計画図|仮設図|現況図|撤去図|改修図|平面図|立面図|断面図|矩計図|展開図|天井伏図|屋根伏図|床伏図|基礎伏図|建具特記|建具表|建具リスト|仕上表|詳細図|求積図|面積表)/;
+
+  const heightRange = document.getElementById('heightRange');
+  const heightVal = document.getElementById('heightVal');
+
+  function updateProgress(current, total, label) {
+    const wrap = document.getElementById('progressWrap');
+    const text = document.getElementById('progressText');
+    const fill = document.getElementById('progressBarFill');
+    wrap.style.display = 'block';
+    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    text.textContent = `${label}（${current} / ${total} ページ・${pct}%）`;
+    fill.style.width = `${pct}%`;
+  }
+
+  function finishProgress(message) {
+    const text = document.getElementById('progressText');
+    const fill = document.getElementById('progressBarFill');
+    text.textContent = message;
+    fill.style.width = '100%';
+  }
+
+  const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  heightRange.addEventListener('input', () => {
+    heightVal.textContent = heightRange.value;
+    if (cachedPageTexts.length > 0) {
+      renderTableFromCache();
+    }
+  });
+
+  document.getElementById('pdfInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const startTime = performance.now();
+    document.getElementById('resultArea').style.display = 'none';
+    updateProgress(0, 1, 'PDFファイルを読み込み中...');
+    await yieldUI();
+
+    loadedPdfBytes = await file.arrayBuffer();
+    // テキスト抽出専用にフォント等の重い描画リソース読み込みをスキップして高速化
+    parsedPdfDoc = await pdfjsLib.getDocument({
+      data: loadedPdfBytes.slice(0),
+      disableFontFace: true,
+      disableRange: true,
+      disableStream: true
+    }).promise;
+
+    const totalPages = parsedPdfDoc.numPages;
+    cachedPageTexts = new Array(totalPages);
+
+    // 4ページずつ並列処理して大幅時間短縮
+    const BATCH_SIZE = 4;
+    let completed = 0;
+
+    for (let i = 0; i < totalPages; i += BATCH_SIZE) {
+      const batchPromises = [];
+      for (let j = 0; j < BATCH_SIZE && (i + j) < totalPages; j++) {
+        const pageNum = i + j + 1;
+        batchPromises.push((async () => {
+          const page = await parsedPdfDoc.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 1.0 });
+          const textContent = await page.getTextContent({ includeMarkedContent: false });
+
+          const maxThreshold = viewport.height * 0.30;
+          const filteredItems = [];
+          const rawItems = textContent.items;
+          for (let k = 0; k < rawItems.length; k++) {
+            const item = rawItems[k];
+            if (item.transform[5] <= maxThreshold && item.str.trim() !== '') {
+              filteredItems.push({
+                str: item.str,
+                x: item.transform[4],
+                y: item.transform[5],
+                fontSize: Math.abs(item.transform[0]) || 10,
+                width: item.width
+              });
+            }
+          }
+
+          cachedPageTexts[pageNum - 1] = {
+            pageNum: pageNum,
+            height: viewport.height,
+            items: filteredItems
+          };
+          // ページオブジェクトのメモリを即解放
+          page.cleanup();
+        })());
+      }
+
+      await Promise.all(batchPromises);
+      completed = Math.min(i + BATCH_SIZE, totalPages);
+      updateProgress(completed, totalPages, '図面データを並列高速解析中');
+      await yieldUI();
+    }
+
+    renderTableFromCache();
+    const sec = ((performance.now() - startTime) / 1000).toFixed(1);
+    finishProgress(`解析完了！（全 ${totalPages} ページ・処理時間 ${sec}秒）`);
+    document.getElementById('resultArea').style.display = 'block';
+  });
+
+  // 拡大モーダルの制御（描画キャンセル機能付きで連続めくりが軽快）
+  const previewModal = document.getElementById('previewModal');
+  const modalCanvas = document.getElementById('modalCanvas');
+  const modalCanvasWrap = document.getElementById('modalCanvasWrap');
+  const modalLoading = document.getElementById('modalLoading');
+  const zoomToggleBtn = document.getElementById('zoomToggleBtn');
+  const prevPageBtn = document.getElementById('prevPageBtn');
+  const nextPageBtn = document.getElementById('nextPageBtn');
+
+  async function openPreviewModal(pageNum) {
+    currentModalPageNum = pageNum;
+    isZoomedIn = false;
+    zoomToggleBtn.textContent = '右下（表題欄）を拡大';
+    previewModal.style.display = 'flex';
+    await updateModalContent();
+  }
+
+  async function updateModalContent() {
+    if (!parsedPdfDoc) return;
+
+    // 前の描画が動いていたら即キャンセル
+    if (currentRenderTask) {
+      try { currentRenderTask.cancel(); } catch (e) {}
+      currentRenderTask = null;
+    }
+
+    const inputs = document.querySelectorAll('.zumen-input');
+    const currentName = inputs[currentModalPageNum - 1] ? inputs[currentModalPageNum - 1].value : '';
+    document.getElementById('modalTitle').textContent = `${currentModalPageNum} / ${parsedPdfDoc.numPages} ページ目（保存名: ${currentName}.pdf）`;
+
+    prevPageBtn.disabled = (currentModalPageNum <= 1);
+    nextPageBtn.disabled = (currentModalPageNum >= parsedPdfDoc.numPages);
+    modalLoading.style.display = 'block';
+
+    try {
+      // 建築図面のベクター線は倍率を最適化（全体0.85倍、拡大1.8倍）すると描画が3倍速くなる
+      const scale = isZoomedIn ? 1.8 : 0.85;
+      const page = await parsedPdfDoc.getPage(currentModalPageNum);
+      const viewport = page.getViewport({ scale: scale });
+      modalCanvas.width = viewport.width;
+      modalCanvas.height = viewport.height;
+      const ctx = modalCanvas.getContext('2d', { alpha: false });
+
+      currentRenderTask = page.render({ canvasContext: ctx, viewport: viewport });
+      await currentRenderTask.promise;
+      currentRenderTask = null;
+      page.cleanup();
+
+      if (isZoomedIn) {
+        modalCanvasWrap.scrollLeft = modalCanvasWrap.scrollWidth;
+        modalCanvasWrap.scrollTop = modalCanvasWrap.scrollHeight;
+      } else {
+        modalCanvasWrap.scrollLeft = 0;
+        modalCanvasWrap.scrollTop = 0;
+      }
+    } catch (err) {
+      // キャンセル時のエラーは無視
+    } finally {
+      modalLoading.style.display = 'none';
+    }
+  }
+
+  prevPageBtn.addEventListener('click', () => {
+    if (currentModalPageNum > 1) {
+      currentModalPageNum--;
+      updateModalContent();
+    }
+  });
+
+  nextPageBtn.addEventListener('click', () => {
+    if (parsedPdfDoc && currentModalPageNum < parsedPdfDoc.numPages) {
+      currentModalPageNum++;
+      updateModalContent();
+    }
+  });
+
+  zoomToggleBtn.addEventListener('click', () => {
+    isZoomedIn = !isZoomedIn;
+    zoomToggleBtn.textContent = isZoomedIn ? '全体表示に戻す' : '右下（表題欄）を拡大';
+    updateModalContent();
+  });
+
+  document.getElementById('closeModalBtn').addEventListener('click', () => {
+    if (currentRenderTask) { try { currentRenderTask.cancel(); } catch (e) {} }
+    previewModal.style.display = 'none';
+  });
+  previewModal.addEventListener('click', (e) => {
+    if (e.target === previewModal) {
+      if (currentRenderTask) { try { currentRenderTask.cancel(); } catch (e) {} }
+      previewModal.style.display = 'none';
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (previewModal.style.display !== 'flex') return;
+    if (e.key === 'Escape') {
+      if (currentRenderTask) { try { currentRenderTask.cancel(); } catch (e) {} }
+      previewModal.style.display = 'none';
+    }
+    if (e.key === 'ArrowLeft' && currentModalPageNum > 1) {
+      currentModalPageNum--;
+      updateModalContent();
+    }
+    if (e.key === 'ArrowRight' && parsedPdfDoc && currentModalPageNum < parsedPdfDoc.numPages) {
+      currentModalPageNum++;
+      updateModalContent();
+    }
+  });
+
+  function groupTextItems(items) {
+    const sorted = [...items].sort((a, b) => {
+      const yDiff = b.y - a.y;
+      if (Math.abs(yDiff) > 4) return yDiff;
+      return a.x - b.x;
+    });
+
+    const blocks = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const item = sorted[i];
+      const str = item.str.trim();
+      if (!str) continue;
+      const w = item.width || (str.length * item.fontSize * 0.8);
+
+      const prev = blocks[blocks.length - 1];
+      const gap = prev ? (item.x - prev.endX) : 999;
+
+      if (prev && Math.abs(prev.y - item.y) <= 3 && gap >= -3 && gap <= item.fontSize * 2.2) {
+        prev.text += str;
+        prev.endX = Math.max(prev.endX, item.x + w);
+        prev.fontSize = Math.max(prev.fontSize, item.fontSize);
+      } else {
+        blocks.push({ text: str, x: item.x, y: item.y, endX: item.x + w, fontSize: item.fontSize });
+      }
+    }
+    return blocks;
+  }
+
+  function cleanZumenTitle(raw) {
+    let s = raw.trim();
+    s = s.replace(/^図面(名|名称|タイトル)[:：\s]*/, '');
+    s = s.split(/(株式会社|有限会社|一級建築士|二級建築士|建築士事務所|図番|縮尺|札幌市|都市局)/)[0];
+    s = s.replace(/(仕様書|表紙|案内図|配置図|付近見取図|位置図|目録|リスト|計画図|建具表|詳細図)[0-9０-９]+$/, '$1');
+    return s.trim();
+  }
+
+  function isNoise(txt) {
+    const n = txt.replace(/\s+/g, '');
+    if (!n || n.length === 1) return true;
+    if (/(建築士|図番|工法|令和|特記事項)/.test(n)) return true;
+    if (/^(図面|縮尺|日付|作成|設計|承認|照査|尺度|S=|NO\.?|工事名|工事名称|記事|備考|凡例|型取付箇所|取付箇所|仕様|材質|数量|記号|番号|名称|摘要|形状|寸法|仕上|備考欄|ガラス厚さ|ガラス暑さ|施錠機構)$/i.test(n)) {
+      return true;
+    }
+    if (/^[0-9０-９,，\/／\.\-\s\(\)（）]+$/.test(n)) return true;
+    if (/^[A-Za-zＡ-Ｚａ-ｚ]{1,2}[0-9０-９]{0,2}$/.test(n)) return true;
+    if (/(株式会社|有限会社|都市局|建築部|工事)$/.test(n)) return true;
+    if (n.length > 35 || n.includes('。') || n.includes('､') || n.includes('、')) return true;
+    return false;
+  }
+
+  function extractZumenName(blocks, pageNum) {
+    const inlineLabel = blocks.find(b => /^図面(名|名称|タイトル)/.test(b.text.replace(/\s+/g, '')) && b.text.replace(/\s+/g, '').length > 3);
+    if (inlineLabel) {
+      const cleaned = cleanZumenTitle(inlineLabel.text);
+      if (cleaned && !isNoise(cleaned)) return { name: cleaned, auto: true };
+    }
+
+    const labelBlock = blocks.find(b => /^図面(名|名称|タイトル)[:：]?$/.test(b.text.replace(/\s+/g, '')));
+    if (labelBlock) {
+      let bestCandidate = null;
+      let bestScore = Infinity;
+      for (const b of blocks) {
+        if (b === labelBlock) continue;
+        const cleaned = cleanZumenTitle(b.text);
+        if (!cleaned || isNoise(cleaned)) continue;
+
+        const dx = b.x - labelBlock.x;
+        const dy = labelBlock.y - b.y;
+        if (Math.abs(dy) <= 12 && dx > 2 && dx < 380 && dx < bestScore) {
+          bestScore = dx; bestCandidate = cleaned;
+        }
+        if (dy > 3 && dy <= 60 && Math.abs(dx) <= 70) {
+          const score = dy * 2 + Math.abs(dx);
+          if (score < bestScore) { bestScore = score; bestCandidate = cleaned; }
+        }
+      }
+      if (bestCandidate) return { name: bestCandidate, auto: true };
+    }
+
+    const keywordBlocks = blocks
+      .map(b => ({ ...b, cleaned: cleanZumenTitle(b.text) }))
+      .filter(b => b.cleaned && !isNoise(b.cleaned) && KEYWORD_REGEX.test(b.cleaned));
+
+    if (keywordBlocks.length > 0) {
+      keywordBlocks.sort((a, b) => a.y - b.y);
+      return { name: keywordBlocks[0].cleaned, auto: true };
+    }
+
+    return { name: `図面_${String(pageNum).padStart(2, '0')}`, auto: false };
+  }
+
+  function renderTableFromCache() {
+    const pageList = document.getElementById('pageList');
+    const ratio = parseInt(heightRange.value, 10) / 100;
+    const fragment = document.createDocumentFragment();
+
+    for (let idx = 0; idx < cachedPageTexts.length; idx++) {
+      const { pageNum, height, items } = cachedPageTexts[idx];
+      const bottomThreshold = height * ratio;
+      const bottomItems = items.filter(item => item.y <= bottomThreshold);
+
+      const blocks = groupTextItems(bottomItems);
+      const result = extractZumenName(blocks, pageNum);
+      const zumenName = sanitizeFileName(result.name);
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${pageNum}</strong></td>
+        <td>
+          <button type="button" class="view-btn">🔍 図面を表示</button>
+        </td>
+        <td>
+          <div class="input-row">
+            <div><input type="text" class="zumen-input ${result.auto ? '' : 'needs-check'}" value="${escapeHtml(zumenName)}"> .pdf</div>
+            ${result.auto ? '' : '<span class="no-candidate-msg">（候補なし - 「図面を表示」で確認し候補ボタン等で設定してください）</span>'}
+          </div>
+          <div class="preset-row"></div>
+        </td>
+      `;
+
+      const viewBtn = tr.querySelector('.view-btn');
+      const zumenInput = tr.querySelector('.zumen-input');
+      const presetRow = tr.querySelector('.preset-row');
+      const noCandidateMsg = tr.querySelector('.no-candidate-msg');
+
+      viewBtn.addEventListener('click', () => {
+        openPreviewModal(pageNum);
+      });
+
+      zumenInput.addEventListener('input', () => {
+        zumenInput.classList.remove('needs-check');
+        if (noCandidateMsg) noCandidateMsg.style.display = 'none';
+      });
+
+      PRESET_TITLES.forEach(title => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'preset-btn';
+        btn.textContent = title;
+        btn.addEventListener('click', () => {
+          zumenInput.value = title;
+          zumenInput.classList.remove('needs-check');
+          if (noCandidateMsg) noCandidateMsg.style.display = 'none';
+        });
+        presetRow.appendChild(btn);
+      });
+
+      fragment.appendChild(tr);
+    }
+
+    pageList.innerHTML = '';
+    pageList.appendChild(fragment);
+  }
+
+  function sanitizeFileName(str) {
+    return str.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  document.getElementById('downloadBtn').addEventListener('click', async () => {
+    const startTime = performance.now();
+    const downloadBtn = document.getElementById('downloadBtn');
+    downloadBtn.disabled = true;
+
+    updateProgress(0, 1, '元PDFデータを準備中...');
+    await yieldUI();
+
+    const srcDoc = await PDFLib.PDFDocument.load(loadedPdfBytes, { ignoreEncryption: true });
+    const zip = new JSZip();
+    const inputs = document.querySelectorAll('.zumen-input');
+    const total = inputs.length;
+    const usedNames = {};
+
+    for (let i = 0; i < total; i++) {
+      let baseName = sanitizeFileName(inputs[i].value) || `図面_${i + 1}`;
+
+      if (usedNames[baseName]) {
+        usedNames[baseName]++;
+        baseName = `${baseName}_${usedNames[baseName]}`;
+      } else {
+        usedNames[baseName] = 1;
+      }
+
+      const newDoc = await PDFLib.PDFDocument.create();
+      const [copiedPage] = await newDoc.copyPages(srcDoc, [i]);
+      newDoc.addPage(copiedPage);
+      // オブジェクトストリーム無効化で保存速度を優先
+      const pdfBytes = await newDoc.save({ useObjectStreams: false });
+
+      zip.file(`${baseName}.pdf`, pdfBytes);
+
+      if ((i + 1) % 3 === 0 || i === total - 1) {
+        updateProgress(i + 1, total, 'PDFを高速分割中');
+        await yieldUI();
+      }
+    }
+
+    updateProgress(total, total, 'ZIPファイルをまとめ中...');
+    await yieldUI();
+
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(zipBlob);
+    link.download = '分割図面一式.zip';
+    link.click();
+
+    const sec = ((performance.now() - startTime) / 1000).toFixed(1);
+    finishProgress(`全 ${total} ページの分割・ダウンロード完了！（処理時間 ${sec}秒）`);
+    downloadBtn.disabled = false;
+  });
+</script>
+</body>
+</html>
